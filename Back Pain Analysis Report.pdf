@@ -1,0 +1,706 @@
+---
+title: "An Analysis of Predictive Factors in the Clinical Classification of Back Pain"
+author: "Aidan Gogarty"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, include = F, warning = F)
+
+library(ggplot2)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(arules)
+library(ResourceSelection)
+library(randomForest)
+library(ROCR)
+library(adabag)
+# Loading dataset
+
+load("~/Diploma/data_project_backpain.RData")
+
+# Reordering PainDiagnosis alphabetically
+
+lev <- levels(dat$PainDiagnosis)
+
+dat$PainDiagnosis <- factor(dat$PainDiagnosis, levels = sort(lev))
+
+levels(dat$PainDiagnosis)   
+
+
+```
+
+
+# Abstract
+
+This report concerns the application of several statistical learning techniques in order to predict the classification of back pain as one of two types, i.e. neuropathic or nociceptive. We explore prima facie potential factors in the classification graphically, and then delve further into an analysis of these factors using modern statistical machine learning techniques. We find several factors, the presence or absence of which lead to a binary classification of the type of a patient's back pain, including  but not limited to: pain location, association with trauma or pathology, type of sensation, widespread vs. localised distribution of pain, functional level of disability, and pain in response to mechanical movement or palpation. 
+
+
+
+
+## Introduction
+
+In this report, we hope to analyse patterns in factors which lead to the classification of back pain as either neuropathic or nociceptive in nature. Neuropathic pain is pain which develops when the nervous system is injured or affected through disease, whereas nociceptive pain is pain which does not develop from these.
+
+Our dataset contains 380 observations of patients suffering from lower back pain. We also have 31 variables related to each patient: age, sex and physical/mental health measurements, as well as recordings of the duration of the current pain episode, measurements of subjective well-being, range of physical disability caused by the pain, and the presence or absence of several factors related to the pain, such as localisation, sensation, onset triggers, association with injury, trauma or disease, etc.
+
+Back pain is a serious inhibitor to physical and mental well-being across a large section of the population. It is hoped that through this analysis of some of the characteristics associated with both types of pain diagnosis, we can gain more insight into the causes and potential treatments of back pain in the future, as well as a better understanding of what causes back pain to develop. 
+
+\newpage
+
+
+```{r EDA}
+
+# Exploratory Data Analysis Plots
+
+dat2 <- dat # working with copy of dataset to preserve structure of original
+
+neuro <- subset(dat2, dat$PainDiagnosis == "Neuropathic") # subset of Neuropathic pain
+noci <- subset(dat2, dat$PainDiagnosis == "Nociceptive")  # subset of Nociceptive
+
+levels(neuro$DurationCurrent) <- c("0-3","4-6","7-12","16-24","28-52",">52") # putting duration length
+levels(noci$DurationCurrent) <- c("0-3","4-6","7-12","16-24","28-52",">52")  # into weeks
+
+dat2$AgeRange <- cut(dat2$Age, breaks = c(15,30,40,50,60,70,85), 
+                     labels = c("15-30","30-40","40-50","50-60","60-70","70-85")) 
+# putting age range into bins
+
+# plotting gender
+
+gg_gender <- ggplot(dat, aes(PainDiagnosis)) + theme_bw() + 
+  theme(legend.position = "bottom",
+  legend.title = element_blank(),
+  legend.text = element_text(size = 6))
+
+plot_gender <- gg_gender + geom_bar(aes(fill = dat$Gender)) 
+
+
+# plotting age ranges
+
+gg_age_range <- ggplot(dat2, aes(x=AgeRange,fill = PainDiagnosis)) + theme_bw() + 
+  theme(legend.position = "bottom",
+  legend.title = element_blank(),
+  legend.text = element_text(size = 6))
+  
+plot_age_range <- gg_age_range + geom_histogram(stat="count", position = "dodge") + 
+  scale_fill_manual(values = c("blue","orange"))
+
+
+# plotting pain location
+  
+gg_location_neuro <- ggplot(neuro, aes(DurationCurrent,Age)) + theme_bw() + 
+  theme(legend.position = "bottom", 
+  legend.title = element_blank(),
+  legend.text = element_text(size = 7))
+
+plot_location_neuro <- gg_location_neuro + 
+  geom_jitter(aes(col = neuro$PainLocation, shape = neuro$PainLocation), 
+  size = 2, alpha = 0.8) + scale_shape_manual(values = c(15:20)) + 
+  xlab("Current duration in weeks") + 
+  ggtitle("Neuropathic Pain") + theme(plot.title = element_text(hjust = 0.5)) 
+
+
+gg_location_noci <- ggplot(noci, aes(DurationCurrent,Age)) + theme_bw() + 
+  theme(legend.position = "bottom", legend.title = element_blank(), 
+        legend.text = element_text(size = 6))
+
+plot_location_noci <- gg_location_noci + 
+  geom_jitter(aes(col = noci$PainLocation, shape = noci$PainLocation), 
+  size = 2, alpha = 0.8) + scale_shape_manual(values = c(15:20)) + 
+  xlab("Current duration in weeks") + 
+  ggtitle("Nociceptive Pain") + theme(plot.title = element_text(hjust = 0.5)) 
+          
+
+#############################
+
+dat3 <- dat # reassigning original dataset to preserve structure of dat
+
+dat3$PainDiagnosis <- ifelse(dat3$PainDiagnosis == "Nociceptive","Noci","Neuro")
+
+
+# plotting box plots of RMDQ, vNRS, SF36PCS, SF36MCS
+
+gg_rmdq <- ggplot(dat3, aes(x=PainDiagnosis,y=RMDQ, fill = PainDiagnosis)) + 
+  theme_bw() + 
+  theme(legend.position = "none", legend.text = element_text(size = 6),
+  axis.title.x = element_blank(), axis.title.y = element_blank(),
+  legend.title = element_blank())
+
+plot_rmdq <- gg_rmdq + geom_boxplot() + ggtitle("RMDQ") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+gg_vnrs <- ggplot(dat3, aes(x=PainDiagnosis,y=vNRS, fill = PainDiagnosis)) + 
+  theme_bw() + 
+  theme(legend.position = "none", legend.text = element_text(size = 6),
+  axis.title.x = element_blank(), axis.title.y = element_blank())
+
+
+plot_vnrs <- gg_vnrs + geom_boxplot() + ggtitle("vNRS") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+gg_sf36pcs <- ggplot(dat3, aes(x=PainDiagnosis,y=SF36PCS, fill = PainDiagnosis)) + 
+  theme_bw() + theme(legend.position = "none",legend.text = element_text(size = 6),
+  axis.title.x = element_blank(),axis.title.y = element_blank())
+
+
+plot_sf36pcs <- gg_sf36pcs + geom_boxplot() + ggtitle("SF36PCS") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+
+gg_sf36mcs <- ggplot(dat3, aes(x=PainDiagnosis,y=SF36MCS, fill = PainDiagnosis)) + 
+  theme_bw() + 
+  theme(legend.position = "none", legend.text = element_text(size = 6),
+  axis.title.x = element_blank(), axis.title.y = element_blank())
+
+
+plot_sf36mcs <- gg_sf36mcs + geom_boxplot() + ggtitle("SF36MCS") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+```
+
+
+## Methods
+
+
+Initial analysis was done by splitting the data into 'neuropathic' vs 'nociceptive' sets and visually exploring some of the potential factors which might be different in each. This was done in order to gain a basic overview of some of the factors which might go into leading to one classification or the other.
+
+The following plots show the data split first by Sex and Age Range, and we see that Sex is relatively similar for both types of pain, but the spread of patients with Neuropathic pain is slightly younger than those with Nociceptive pain.
+
+
+
+
+```{r plots1, fig.height = 3, include=T}
+
+# plot of sexes and ages
+
+gender_and_ages <- grid.arrange(plot_gender, plot_age_range, nrow=1, ncol = 2)
+
+```
+
+
+
+
+We then plot pain type based on age, duration of current episode, and pain location. Duration is plotted on the x-axis and Age on the y-axis. Pain Location is classified in colours and shapes, with the key at the bottom of each graph. 
+
+We see that Nociceptive pain is more spreadout, both in regards to duration and to age. However, the starkest difference is that of Pain Location. While Neuropathic pain has a range of locations, Nociceptive pain is located almost entirely in the back, with relatively few reports of pain also in the legs.
+
+
+
+```{r plots2, fig.height = 3, include=T}
+
+locations <- grid.arrange(plot_location_neuro, plot_location_noci, nrow=1, ncol=2)
+
+
+```
+
+
+\newpage
+
+Finally we plot the scores for various medical tests, split by pain type. RMDQ is the Roland Morris Disability Questionnaire; vNRS is the verbal Numerical Rating Scale for pain intensity; SF36PCS and SF36MCS are the Short Form (36) Health Survey - Physical Component Summary & Mental Component Summary, respectively.
+
+We certainly see differences in both the mean and spread of all of these measurements. However, we must do a further statistical analysis in order to determine the importance of their roles in Pain Classification.
+
+```{r plots3, fig.height = 2, include=T}
+
+rmdq_etc <- grid.arrange(plot_rmdq,
+                         plot_vnrs,
+                         plot_sf36pcs,
+                         plot_sf36mcs,
+                         nrow=1, ncol=4)
+
+```
+
+
+A study of association rules is done via the *apriori* algorithm with support = 0.05, confidence = 0.6 and minlen/maxlen both set to 2.  The results are grouped into factors which influence the classification of pain as either Neuropathic or Nociceptive. Sorting by decreasing Standardised Lift values, we see that we get several variables where the presence or absence of that variable plays an almost equally important role in the classification of pain. Below is a table of the 15 most important association rules (sorted by standardised lift). Note the similarities in Standardised Lift values between the Presence/Absence of certain criteria, e.g. Criteria 4, 8, 10, 13, and Pain Location. 
+
+
+```{r rules}
+
+
+# Finding Association Rules for PainDiagnosis
+
+
+rules <- apriori(dat, parameter = list(support = 0.05, confidence = 0.6,
+                                                minlen = 2, maxlen = 2))
+
+
+# specifying that we want criteria on the left hand side to lead to a binary 
+# pain diagnosis classification on the right hand side
+
+neuro.rhs <- subset(rules, subset = rhs %in% "PainDiagnosis=Neuropathic")
+noci.rhs <- subset(rules, subset = rhs %in% "PainDiagnosis=Nociceptive")
+
+# calculating sLift for neuro/noci pain
+
+qual.neuro <- quality(neuro.rhs)
+qual.noci <- quality(noci.rhs)
+
+pA_neuro <- qual.neuro$support/qual.neuro$confidence
+pB_neuro <- qual.neuro$confidence/qual.neuro$lift
+
+pA_noci <- qual.noci$support/qual.noci$confidence
+pB_noci <- qual.noci$confidence/qual.noci$lift
+
+
+U.neuro <- apply(cbind(1/pA_neuro, 1/pB_neuro), 1, min)
+L.neuro <- apply(cbind(1/pA_neuro + 1/pB_neuro - 1/(pA_neuro*pB_neuro), 
+                       0.01/(pA_neuro*pB_neuro), 0.5/pB_neuro, 0), 1, max)
+
+U.noci <- apply(cbind(1/pA_noci, 1/pB_noci), 1, min)
+L.noci <- apply(cbind(1/pA_noci + 1/pB_noci - 1/(pA_noci*pB_noci), 
+                       0.01/(pA_noci*pB_noci), 0.5/pB_noci, 0), 1, max)
+
+
+sLift_neuro <- (qual.neuro$lift - L.neuro)/(U.neuro - L.neuro)
+sLift_noci <- (qual.noci$lift - L.noci)/(U.noci - L.noci)
+
+end.neuro <- data.frame(rule = labels(neuro.rhs), sLift_neuro)
+end.noci <- data.frame(rule = labels(noci.rhs), sLift_noci)
+
+noci.rules <- head(end.noci[order(end.noci$sLift_noci, decreasing=T),],15)
+colnames(noci.rules) <- c("Rules - Nociceptive Pain","Standardised Lift")
+
+neuro.rules <- head(end.neuro[order(end.neuro$sLift_neuro, decreasing = T),],15)
+colnames(neuro.rules) <- c("Rules - Neuropathic Pain","Standardised Lift")
+
+rownames(neuro.rules) <- NULL
+rownames(noci.rules) <- NULL
+
+rules.table <- cbind(noci.rules,neuro.rules)
+
+
+
+```
+
+
+```{r rules_table, include=T}
+
+kable(rules.table, 
+             caption = "Association Rules for Pain Diagnosis",
+             format = "latex", booktabs = T) %>% 
+  kable_styling(latex_options = c("scale_down","striped", "hold_position")) 
+
+```
+
+
+Note that while several of the Criteria seem to play an important role in classification, neither Age, Sex, Duration nor many of the other scores plotted previously seem overly important.
+
+Following this, Random Forest, Logistic Regression and Boosting models were fitted to the dataset. Models were fitted to training subsets of the full dataset, and to a dataset of the most important variables, as ascertained from the Association Rules above, and from a plot of important variables from the Random Forest model below. The accuracy of each model was tested on the prediction of validation and test datasets in order to see which model gave a more accurate prediction of pain classification.
+
+\newpage
+
+## Results
+
+```{r test_train_split}
+
+# Restricting dataset to important variables; splitting into Train/Validate/Test 
+
+N <- nrow(dat)
+
+train <- sample(1:N, size = 0.7*N)
+val <- sample(setdiff(1:N, train), size = 0.15*N)
+test <- setdiff(1:N, union(train,val))
+
+```
+
+First, a Random Forest model was fitted on a training split of the unadulterated dataset, and the importance of all variables was assessed. A plot of this is below.
+
+```{r random_forest, include=T, fig.height = 5}
+
+# fitting RF to training subset of intact dataset, plotting variable importance
+
+full_rf <- randomForest(PainDiagnosis ~ ., data = dat[train,], importance = T)
+
+varImpPlot(full_rf, type = 1, main = "Variable Importance", n.var = 15)
+
+```
+
+
+```{r reduced_dataset}
+
+# reducing dataset to most important variables
+
+reduced_dat <- dat[,c(1,5,18:25,28,29,31)]
+
+
+```
+
+
+Many of the same variables were classed as 'important' by the Association Rules. In order to test whether these variables play a larger role than others in the classification of pain, a second Random Forest model was fitted on a reduced form of the dataset. The reduced dataset contained variables common to both the Association Rules and the Variable Importance plot, found in the table below, as well as the variable to be classified, PainDiagnosis. 
+
+
+```{r table_reduced_var, include = T}
+
+# table of variable names in reduced dataset
+
+r <- colnames(reduced_dat)
+
+reduced_variables <- rbind(r[2:7],r[8:13])
+
+kable(reduced_variables, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                full_width = T) 
+
+```
+
+A slight decrease in overall classification error from the model fitted on the dataset with reduced variables was observed.The confusion matrices for both Random Forest models are given below. 
+
+```{r reduced_rf, include=T}
+
+# RF on reduced dataset
+
+reduced_rf <- randomForest(PainDiagnosis ~ ., data = reduced_dat[train,], importance = T)
+
+
+# table of confusion matrices for full and reduced datasets
+
+c1 <- as.data.frame(full_rf$confusion)
+names(c1)[3] <- "Classification Error"
+
+c2 <- as.data.frame(reduced_rf$confusion)
+names(c2)[3] <- "Classification Error"
+
+conf_matx <- cbind(c1,c2)
+
+kable(conf_matx, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position","scale_down")) %>%
+  add_header_above(c(" " = 1, "All Original Variables" = 3, "Reduced No. of Variables" = 3))
+
+
+```
+
+
+```{r predict_rf}
+
+# using both full RF and reduced RF models on validation set.
+
+
+val_full <- predict(full_rf, type = "class", newdata = dat[val,])
+
+val_reduced <- predict(reduced_rf, type = "class", newdata = dat[val,])
+
+
+full_table <- table(dat[val,]$PainDiagnosis,val_full)
+reduced_table <- table(dat[val,]$PainDiagnosis, val_reduced)
+
+
+full <- sum(diag(full_table)) / sum(full_table)
+red <- sum(diag(reduced_table)) / sum(reduced_table)
+
+```
+
+
+Predictions from both Random Forest models on a validation dataset (15% of dataset not included in training dataset) gave an accuracy of `r full` for the model fitted on the full dataset, and an accuracy of `r red` for the model fitted on the reduced-variable dataset. As the second model is more accurate, it was used to classify a final test set (15% of dataset not included in training or validation datasets).
+
+
+
+```{r test_data}
+
+# using RF on test data
+
+final_rf <- predict(reduced_rf, type = "class", newdata = dat[test,])
+
+final_table <- table(dat[test,]$PainDiagnosis, final_rf)
+
+final_percent <- sum(diag(final_table)) / sum(final_table)
+
+```
+
+
+The accuracy of the model fitted on the reduced-variable dataset in predicting the classification of pain in the test set was `r final_percent`. 
+
+
+
+```{r log_reg}
+
+# fitting logistic regression
+
+fit_red  <- glm(PainDiagnosis ~ ., data = reduced_dat[train,], family = "binomial")
+
+
+# testing for Goodness of Fit
+
+dev_red  <- deviance(fit_red)
+
+mod_mat_red  <- model.matrix(fit_red)
+
+NO_red  <- nrow(unique(mod_mat_red))
+
+m_red  <- length(fit_red$coefficients)
+
+dev_score <- 1 - pchisq(dev_red, NO_red, m_red)
+
+```
+
+
+Since the reduced-variable dataset showed promise in increasing predictive ability for our Random Forest model, a Logistic Regression model was fitted onto a training set (70%) drawn from this dataset.
+
+The Logistic Regression found several variables to be statistically significant, and summary is given below. The Deviance test gave a score of `r dev_score`, which is not statistically significant, meaning that there is evidence that the model might be a good fit.
+
+```{r summary_log, include = T}
+
+summary(fit_red)
+
+```
+
+```{r val_test_log}
+
+# using model to predict classification of validation and test sets 
+
+# validation set
+
+val_prob <-  predict(fit_red, dat[val,],
+                                type = "response")
+
+val_class  <- ifelse(val_prob > 0.5, 1, 0)
+
+val_table  <- table(dat[val,]$PainDiagnosis, val_class == 1)
+
+
+val_result  <- sum(diag(val_table)) / sum(val_table)
+
+
+# test set
+
+test_prob <- predict(fit_red, dat[test,],
+                                type = 'response')
+
+test_class <- ifelse(test_prob > 0.5, 1, 0)
+
+
+test_table <- table(dat[test,]$PainDiagnosis, test_class == 1)
+
+
+test_result <- sum(diag(test_table)) / sum(test_table)
+
+```
+
+The model was used to predict pain classification in a validation set (15%) from the same dataset, with an accuracy of `r val_result`. When used to predict pain classification on a test set (15%) not included in the original training or validation data, it gave an accuracy of `r test_result`. They have the following classification tables:
+
+```{r class_tables, include=T}
+
+class_table <- cbind(val_table,test_table)
+
+kable(class_table, format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position", position = "center")) %>%
+  add_header_above(c(" " = 1, "Validation Set" = 2, "Test Set" = 2))
+
+
+```
+
+
+```{r auc_tau}
+
+# AUC and tau optimisation
+
+pred <- prediction(fitted(fit_red), dat[train,]$PainDiagnosis)
+perf <- performance(pred, "tpr","fpr")
+
+sens <- performance(pred, "sens")
+spec <- performance(pred, "spec")
+
+tau <- sens@x.values[[1]]
+Sensitivity_Specificity <- sens@y.values[[1]] + spec@y.values[[1]]
+
+best <- which.max(Sensitivity_Specificity)
+
+auc <- performance(pred, "auc")
+
+
+```
+
+We sought to optimise our model through optimisation of our tau-value. Below are graphs of the True Positive Rate vs False Positive Rate for the Logistic Regression model (left) and a graph of optimisation for tau-value (right). 
+
+
+```{r auc_tau_plots, include=T, fig.height = 4}
+
+par(mfrow=c(1,2))
+
+plot(perf, main = "TP FP Rate")
+
+plot(tau, Sensitivity_Specificity, type = "l", main = "Tau Optimisation")
+
+points(tau[best], Sensitivity_Specificity[best], pch = 19, col = adjustcolor("red", 0.5))
+
+
+t.best <- tau[best]
+
+area <- round(as.numeric(auc@y.values),5)
+
+```
+
+The area under curve value for the graph for the TP FP Rate graph is `r area`, while the optimal value for tau is found to be `r t.best`. However, using this optimal tau value for classification, we didn't find improved accuracy on validation or test sets, and in some cases, accuracy declined. Therefore, we kept the original tau value of 0.5.
+
+
+```{r optim,eval=F}
+
+# prediction with optimal tau value
+
+pred2 <- ifelse(fitted(fit_red) > tau[best], 1, 0)
+
+
+optim_probabilities <- predict(fit_red, dat[val,],
+                                type = 'response')
+
+optim_results <- ifelse(optim_probabilities > tau[best], 1, 0)
+
+
+optim_tab <- table(dat[val,]$PainDiagnosis, optim_probabilities > tau[best])
+
+optim_tab
+
+optim_sum <- sum(diag(optim_tab)) / sum(optim_tab)
+
+optim_sum # gives accuracy of 0.8596491
+
+# no great improvement on predictive ability.
+
+```
+
+```{r log_test_optim,eval=F}
+
+optim_test_prob <- predict(fit_red, dat[test,],
+                                type = 'response')
+
+optim_test_results <- ifelse(optim_test_prob > tau[best], 1, 0)
+
+
+optim_test_tab <- table(dat[test,]$PainDiagnosis, optim_test_results == 1)
+
+optim_test_tab
+
+optim_test_sum <- sum(diag(optim_test_tab)) / sum(optim_test_tab)
+
+
+test_sum # accuracy of original tau = 0.5, gives value of 0.94736
+optim_test_sum # accuracy of optimal tau, gives value of 0.94736
+ 
+```
+
+
+Finally, we fitted Boosting models. Two were fitted: one on the full dataset, and another on the reduced-variable dataset. Fitting onto the dataset with all original variables was done in order to allow any 'weak' classifiers which weren't included in the models above to play a role in the classification. In fact, predictive accuracy was better on both validation and test sets from the reduced-variable model. 
+
+
+```{r boosting, include=T}
+
+
+# boosting - full dataset
+
+fitboost_full <- boosting(PainDiagnosis ~ ., data = dat[train,],
+                     coeflearn = "Breiman",
+                     boos = FALSE)
+
+predValBoost_full <- predict(fitboost_full, newdata = dat[val,])
+f1 <- predValBoost_full[c("confusion","error")] 
+f1 <- round( as.numeric( f1[2]), 5)
+
+predTestBoost_full <- predict(fitboost_full, newdata = dat[test,])
+f2 <- predTestBoost_full[c("confusion","error")]
+f2 <- round( as.numeric( f2[2]), 5)
+
+# boosting - reduced dataset
+
+fitboost_red <- boosting(PainDiagnosis ~ ., data = reduced_dat[train,],
+                     coeflearn = "Breiman",
+                     boos = FALSE)
+
+predValBoost_red <- predict(fitboost_red, newdata = reduced_dat[val,])
+f3 <- predValBoost_red[c("confusion","error")]
+f3 <- round( as.numeric( f3[2]), 5)
+
+predTestBoost_red <- predict(fitboost_red, newdata = reduced_dat[test,])
+f4 <- predTestBoost_red[c("confusion","error")]
+f4 <- round( as.numeric( f4[2]), 5)
+
+``` 
+
+The Boosting model fitted on the full dataset had classification errors of `r f1` and `r f2` for Validation and Test set predictions respectively, whereas the model fitted on the reduced-variable dataset had classification errors of `r f3` and `r f4` for Validation and Test set predictions respectively.
+
+
+\newpage
+
+
+## Discussion
+
+The results from all three model types seem to suggest that the variables which were included in the reduced-variable dataset, i.e. those mentioned on page 4, play an important role in the classification of pain as Neuropathic or Nociceptive. 
+
+All three classification methods performed similar to each other in terms of accuracy on both the Validation set and the Test set. This leads us to believe that all three methods are viable and reliable ways to predict pain classification, given the variables recorded. 
+
+Of particular importance seems to be Pain Location. Already in initial visual exploratory data analysis (page 2), it was seen that there is a discrepancy in how both pain types present in terms of location. 
+
+Other variables which were found to be statistically significant in importance by the Association Rules, Random Forest and Logistic Regression models were:
+
+
+* Criterion 4 - pain disproportionate to injury or pathology
+* Criterion 6 - more constant, unremitting pain
+* Criterion 8 - pain localised to an area of injury or dysfunction
+* Criterion 9 - a dermatomal, cutaneous distribution of pain
+* Criterion 13 - disproportionate and non-mechanical pattern to pain 
+
+
+## Conclusion
+
+From our findings, we conclude that there are several factors which seem to play an important role in back pain, and that presence or absence of these factors in the examination of a patient with back pain can lead to a classification of this pain as Neuropathic or Nociceptive in nature with some accuracy. We also conclude that Pain Location presenting in a unilateral area of the back, or presenting in the back and unilateral leg, seems to correspond to a pain which is more often Neuropathic rather than Nociceptive in nature.
+
+Initial observations of the differences in RMDQ, vNRS, SF36PCS and SF36MCS do seem to suggest that there are differences in the presentations of these between Nociceptive and Neuropathic pain, but these differences were not found to be statistically significant in our analysis, and by omitting these variables, we obtained a higher level of predictive accuracy in our models. 
+
+We believe that more research into this area could lead to new insights into the criteria, characteristics and causes of back pain, which in turn could lead to better methods in alleviating both Neuropathic and Nociceptive pain for patients in the future.
+
+\newpage
+
+## References
+
+### Packages
+
+
+H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+
+
+Baptiste Auguie (2017). gridExtra: Miscellaneous Functions for "Grid" Graphics. R package   version 2.3. https://CRAN.R-project.org/package=gridExtra
+
+
+Yihui Xie (2019). knitr: A General-Purpose Package for Dynamic Report Generation
+  in R. R package version 1.26.
+
+
+Hao Zhu (2019). kableExtra: Construct Complex Table with 'kable' and Pipe Syntax.
+  R package version 1.1.0. https://CRAN.R-project.org/package=kableExtra
+
+
+
+### Documents
+
+
+Zhu, H., 2019. Kableextra. [online] Haozhu233.github.io. Available at: <https://haozhu233.github.io/kableExtra/> [Accessed 28 April 2020].
+
+
+### Websites
+
+
+Nociceptive and neuropathic pain: What's the difference?
+Nociceptive and neuropathic pain: What's the difference? (2020). Available at: https://www.medicalnewstoday.com/articles/319895 (Accessed: 28 April 2020).
+
+
+Roland Morris Disability Questionnaire
+Roland Morris Disability Questionnaire (2020). Available at: http://www.rmdq.org/ (Accessed: 28 April 2020).
+
+
+36-Item Short Form Survey (SF-36) Scoring Instructions
+36-Item Short Form Survey (SF-36) Scoring Instructions (2020). Available at: https://www.rand.org/health-care/surveys_tools/mos/36-item-short-form/scoring.html (Accessed: 28 April 2020).
+
+Anon
+(2020) Aci.health.nsw.gov.au. Available at: https://www.aci.health.nsw.gov.au/__data/assets/pdf_file/0017/212912/Verbal_Numerical_Rating_Scale.pdf (Accessed: 28 April 2020).
+
+
+
+\newpage
+
+# Appendix
+
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE,include=TRUE}
+```
